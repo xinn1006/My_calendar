@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 雲端智能排程器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-slate-50 min-h-screen font-sans">
+
+<div class="max-w-lg mx-auto px-4 py-12">
+    <!-- Header -->
+    <div class="text-center mb-8">
+        <h1 class="text-3xl font-extrabold text-indigo-600 mb-2">Google 智能排程</h1>
+        <div id="auth-status" class="text-xs font-bold uppercase tracking-widest text-slate-400">尚未連線至 Google</div>
+    </div>
+
+    <div class="bg-white rounded-3xl shadow-xl p-8 border border-indigo-50">
+        <!-- Auth Button -->
+        <div id="auth-section" class="mb-6">
+            <button id="authorize_button" onclick="handleAuthClick()" class="w-full py-3 bg-white border border-slate-200 rounded-xl flex items-center justify-center space-x-2 hover:bg-slate-50 transition">
+                <img src="https://www.gstatic.com/images/branding/product/1x/gsa_512dp.png" class="w-5 h-5">
+                <span class="font-bold text-slate-700">連結 Google 日曆</span>
+            </button>
+            <button id="signout_button" onclick="handleSignoutClick()" class="hidden w-full py-2 text-xs text-slate-400 underline">登出 Google 帳號</button>
+        </div>
+
+        <!-- Input Section -->
+        <div id="setup-section" class="space-y-6 opacity-50 pointer-events-none">
+            <div>
+                <label class="block text-sm font-bold text-slate-700 mb-2">行程名稱</label>
+                <input type="text" id="eventTitle" placeholder="例如：開發專案" class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+
+            <div>
+                <label class="block text-sm font-bold text-slate-700 mb-2">預計時長</label>
+                <div class="grid grid-cols-4 gap-2">
+                    <button onclick="setDuration(30, this)" class="dur-btn py-2 border border-slate-200 rounded-lg text-sm">30m</button>
+                    <button onclick="setDuration(60, this)" class="dur-btn py-2 border-2 border-indigo-500 bg-indigo-50 rounded-lg text-sm font-bold text-indigo-700">1h</button>
+                    <button onclick="setDuration(120, this)" class="dur-btn py-2 border border-slate-200 rounded-lg text-sm">2h</button>
+                    <button onclick="setDuration(180, this)" class="dur-btn py-2 border border-slate-200 rounded-lg text-sm">3h</button>
+                </div>
+            </div>
+
+            <button onclick="findRealGaps()" id="scanBtn" class="w-full bg-indigo-600 text-white font-bold py-4 rounded-2xl shadow-lg hover:bg-indigo-700 transition">
+                分析 Google 日曆找空檔
+            </button>
+        </div>
+
+        <!-- Loading -->
+        <div id="loading-section" class="hidden py-10 text-center">
+            <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-indigo-500 border-t-transparent"></div>
+            <p class="text-slate-500 mt-2">正在分析您的行程...</p>
+        </div>
+
+        <!-- Results -->
+        <div id="confirm-section" class="hidden space-y-4">
+            <h3 class="font-bold text-slate-800">偵測到以下空檔：</h3>
+            <div id="slots-container" class="space-y-3"></div>
+            <button onclick="syncToGoogle()" class="w-full bg-green-500 text-white font-bold py-4 rounded-2xl shadow-lg mt-4">同步至 Google Calendar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Google API Scripts -->
+<script async defer src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
+<script async defer src="https://accounts.google.com/gsi/client" onload="gisLoaded()"></script>
+
+<script>
+    /* --- 配置區 --- */
+    const CLIENT_ID = '你的CLIENT_ID.apps.googleusercontent.com'; // 替換成你的 Client ID
+    const SCOPES = 'https://www.googleapis.com/auth/calendar.events';
+    const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest';
+
+    let tokenClient;
+    let gapiInited = false;
+    let gisInited = false;
+    let selectedDuration = 60;
+    let selectedStartTime = null;
+
+    /* --- Google API 初始化 --- */
+    function gapiLoaded() { gapi.load('client', intializeGapiClient); }
+    async function intializeGapiClient() {
+        await gapi.client.init({ discoveryDocs: [DISCOVERY_DOC] });
+        gapiInited = true;
+        checkAuthStatus();
+    }
+    function gisLoaded() {
+        tokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: CLIENT_ID, scope: SCOPES, callback: '', // 在呼叫時定義
+        });
+        gisInited = true;
+        checkAuthStatus();
+    }
+
+    function checkAuthStatus() {
+        if (gapiInited && gisInited) {
+            const token = localStorage.getItem('google_token');
+            if (token) {
+                gapi.client.setToken({ access_token: token });
+                onAuthSuccess();
+            }
+        }
+    }
+
+    function handleAuthClick() {
+        tokenClient.callback = async (resp) => {
+            if (resp.error !== undefined) throw (resp);
+            localStorage.setItem('google_token', resp.access_token);
+            onAuthSuccess();
+        };
+        tokenClient.requestAccessToken({prompt: 'consent'});
+    }
+
+    function onAuthSuccess() {
+        document.getElementById('setup-section').classList.remove('opacity-50', 'pointer-events-none');
+        document.getElementById('authorize_button').classList.add('hidden');
+        document.getElementById('signout_button').classList.remove('hidden');
+        document.getElementById('auth-status').innerText = "Google 已連線";
+        document.getElementById('auth-status').classList.replace('text-slate-400', 'text-green-500');
+    }
+
+    function handleSignoutClick() {
+        const token = gapi.client.getToken();
+        if (token !== null) {
+            google.accounts.oauth2.revoke(token.access_token);
+            gapi.client.setToken('');
+            localStorage.removeItem('google_token');
+            location.reload();
+        }
+    }
+
+    /* --- 排程演算法 --- */
+    async function findRealGaps() {
+        const title = document.getElementById('eventTitle').value;
+        if (!title) { alert('請輸入行程名稱'); return; }
+
+        document.getElementById('setup-section').classList.add('hidden');
+        document.getElementById('loading-section').classList.remove('hidden');
+
+        try {
+            // 1. 抓取從現在開始 48 小時內的行程
+            const now = new Date();
+            const endLimit = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+            
+            const response = await gapi.client.calendar.events.list({
+                'calendarId': 'primary',
+                'timeMin': now.toISOString(),
+                'timeMax': endLimit.toISOString(),
+                'showDeleted': false,
+                'singleEvents': true,
+                'orderBy': 'startTime',
+            });
+
+            const events = response.result.items;
+            const gaps = calculateGaps(events, selectedDuration);
+            displayGaps(gaps);
+
+        } catch (err) {
+            console.error(err);
+            alert('抓取行程失敗，請重新登入');
+            handleSignoutClick();
+        }
+    }
+
+    function calculateGaps(events, durationMin) {
+        let suggestions = [];
+        let searchPtr = new Date();
+        searchPtr.setMinutes(Math.ceil(searchPtr.getMinutes() / 15) * 15, 0, 0); // 從下個 15 分鐘開始
+
+        // 簡化演算法：尋找未來兩天內的空檔
+        while (suggestions.length < 3 && suggestions.length < 100) {
+            // 避開深夜 (22:00 - 08:00)
+            if (searchPtr.getHours() >= 22 || searchPtr.getHours() < 8) {
+                searchPtr.setDate(searchPtr.getDate() + 1);
+                searchPtr.setHours(9, 0, 0);
+                continue;
+            }
+
+            let slotEnd = new Date(searchPtr.getTime() + durationMin * 60000);
+            
+            // 檢查是否與現有行程重疊
+            let isOverlap = events.some(event => {
+                let start = new Date(event.start.dateTime || event.start.date);
+                let end = new Date(event.end.dateTime || event.end.date);
+                return (searchPtr < end && slotEnd > start);
+            });
+
+            if (!isOverlap) {
+                suggestions.push(new Date(searchPtr));
+                searchPtr.setHours(searchPtr.getHours() + 3); // 找到一個後跳 3 小時再找下一個
+            } else {
+                searchPtr.setMinutes(searchPtr.getMinutes() + 30); // 重疊則往後推 30 分鐘
+            }
+        }
+        return suggestions;
+    }
+
+    function displayGaps(gaps) {
+        document.getElementById('loading-section').classList.add('hidden');
+        document.getElementById('confirm-section').classList.remove('hidden');
+        const container = document.getElementById('slots-container');
+        container.innerHTML = '';
+
+        gaps.forEach((time, i) => {
+            const div = document.createElement('div');
+            div.className = `p-4 border-2 rounded-xl cursor-pointer transition ${i===0 ? 'border-indigo-600 bg-indigo-50' : 'border-slate-100 hover:border-indigo-200'}`;
+            div.onclick = () => {
+                selectedStartTime = time;
+                Array.from(container.children).forEach(c => c.classList.replace('border-indigo-600', 'border-slate-100'));
+                Array.from(container.children).forEach(c => c.classList.replace('bg-indigo-50', 'bg-transparent'));
+                div.classList.replace('border-slate-100', 'border-indigo-600');
+                div.classList.add('bg-indigo-50');
+            };
+            div.innerHTML = `<p class="font-bold">${time.toLocaleDateString()} ${time.getHours()}:${time.getMinutes().toString().padStart(2,'0')}</p>`;
+            container.appendChild(div);
+        });
+        selectedStartTime = gaps[0];
+    }
+
+    async function syncToGoogle() {
+        const title = document.getElementById('eventTitle').value;
+        const endTime = new Date(selectedStartTime.getTime() + selectedDuration * 60000);
+
+        const event = {
+            'summary': title,
+            'description': '由 AI 本地智能排程器建議',
+            'start': { 'dateTime': selectedStartTime.toISOString() },
+            'end': { 'dateTime': endTime.toISOString() }
+        };
+
+        try {
+            await gapi.client.calendar.events.insert({
+                'calendarId': 'primary',
+                'resource': event
+            });
+            alert('✅ 成功同步至 Google Calendar！');
+            location.reload();
+        } catch (err) {
+            alert('同步失敗：' + err.result.error.message);
+        }
+    }
+
+    function setDuration(min, el) {
+        selectedDuration = min;
+        document.querySelectorAll('.dur-btn').forEach(b => b.className = "dur-btn py-2 border border-slate-200 rounded-lg text-sm");
+        el.className = "dur-btn py-2 border-2 border-indigo-500 bg-indigo-50 rounded-lg text-sm font-bold text-indigo-700";
+    }
+</script>
+
+</body>
+</html>
